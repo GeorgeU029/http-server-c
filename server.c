@@ -8,103 +8,108 @@
 #include <unistd.h>
 
 int main() {
-    // Disable output buffering
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
     printf("Logs from your program will appear here!\n");
 
-    int server_fd, client_addr_len;
+    int server_fd;
     struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
 
+    // Create socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
         printf("Socket creation failed: %s...\n", strerror(errno));
         return 1;
     }
 
+    // Allow socket reuse
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
         printf("SO_REUSEADDR failed: %s \n", strerror(errno));
         return 1;
     }
 
+    // Configure server address
     struct sockaddr_in serv_addr = { .sin_family = AF_INET,
                                      .sin_port = htons(4221),
-                                     .sin_addr = { htonl(INADDR_ANY) },
-                                   };
+                                     .sin_addr = { htonl(INADDR_ANY) }};
 
+    // Bind to port
     if (bind(server_fd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0) {
         printf("Bind failed: %s \n", strerror(errno));
         return 1;
     }
 
-    int connection_backlog = 5;
-    if (listen(server_fd, connection_backlog) != 0) {
+    // Listen for incoming connections
+    if (listen(server_fd, 5) != 0) {
         printf("Listen failed: %s \n", strerror(errno));
         return 1;
     }
 
     printf("Waiting for a client to connect...\n");
-    client_addr_len = sizeof(client_addr);
 
-    while (1) {
-        int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
-        if (client_fd < 0) {
-            printf("Accept failed: %s\n", strerror(errno));
-            continue;
-        }
-        printf("Client connected\n");
+    // Accept a single connection
+    int conn = accept(server_fd, (struct sockaddr *) &client_addr, &client_addr_len);
+    if (conn < 0) {
+        printf("Accept failed: %s\n", strerror(errno));
+        return 1;
+    }
+    printf("Client connected\n");
 
-        char *response = (char*)calloc(1024, sizeof(char));
-        int bytes_received = recv(client_fd, response, 1024, 0);
-        if (bytes_received <= 0) {
-            printf("There was an error or a client disconnect \n");
-            close(client_fd);
-            free(response);
-            continue;
-        }
-        response[bytes_received] = '\0';
+    // Read request
+    char buff[1024] = {0};
+    read(conn, buff, sizeof(buff));
 
-        char *request_line = strtok(response, "\r\n");
-        if (request_line != NULL) {
-            char *method = strtok(request_line, " ");   // "GET"
-            char *path = strtok(NULL, " ");             // "/home"
-            char *version = strtok(NULL, " ");          // "HTTP/1.1"
+    // Parse request
+    strtok(buff, " ");
+    char *path = strtok(NULL, " ");
 
-            char reply_send[1024];
-
-            if (path != NULL) {
-                if (strcmp(path, "/") == 0) {
-                    snprintf(reply_send, sizeof(reply_send), "HTTP/1.1 200 OK\r\n\r\n");
-                }
-                else if (strncmp(path, "/echo/", 6) == 0) { // Check for /echo/{str}
-                    char *echo_response = path + 6;  // Extract the echo string
-                    snprintf(reply_send, sizeof(reply_send),
-                             "HTTP/1.1 200 OK\r\n"
-                             "Content-Type: text/plain\r\n"
-                             "Content-Length: %zu\r\n\r\n"
-                             "%s",
-                             strlen(echo_response), echo_response);
-                }
-                else {
-                    snprintf(reply_send, sizeof(reply_send), 
-                             "HTTP/1.1 400 Bad Request\r\n"
-                             "Content-Length: 0\r\n\r\n");
-                }
-            } else {
-                snprintf(reply_send, sizeof(reply_send), 
-                         "HTTP/1.1 400 Bad Request\r\n"
-                         "Content-Length: 0\r\n\r\n");
-            }
-
-            send(client_fd, reply_send, strlen(reply_send), 0);
-        }
-
-        close(client_fd);
-        free(response);
+    if (path == NULL) {
+        char response[] = "HTTP/1.1 400 Bad Request\r\n\r\n";
+        send(conn, response, strlen(response), 0);
     }
 
+    else if (strncmp(path, "/user-agent", 11) == 0) {
+        char *line = NULL;
+        while ((line = strtok(NULL, "\r\n")) != NULL) {
+            if (strncmp(line, "User-Agent: ", 12) == 0) {
+                char *user_agent = line + 12;  // Skip "User-Agent: "
+                
+                const char *format = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\n\r\n%s";
+                
+                char response[1024];
+                snprintf(response, sizeof(response), format, strlen(user_agent), user_agent);
+                send(conn, response, strlen(response), 0);
+                break;
+            }
+        }
+    }
+
+    else if (strncmp(path, "/echo/", 6) == 0) {
+        size_t contentLength = strlen(path) - 6;
+        char *content = path + 6;
+
+        const char *format = "HTTP/1.1 200 OK\r\nContent-Type: "
+                             "text/plain\r\nContent-Length: %zu\r\n\r\n%s";
+
+        char response[1024];
+        snprintf(response, sizeof(response), format, contentLength, content);
+        send(conn, response, strlen(response), 0);
+    }
+
+    else if (strcmp(path, "/") == 0) {
+        char response[] = "HTTP/1.1 200 OK\r\n\r\n";
+        send(conn, response, strlen(response), 0);
+    }
+
+    else {
+        char response[] = "HTTP/1.1 404 Not Found\r\n\r\n";
+        send(conn, response, strlen(response), 0);
+    }
+
+    close(conn);
     close(server_fd);
     return 0;
 }
