@@ -19,7 +19,7 @@ It uses **fork()** to handle multiple client connections and is built for simpli
 
 ---
 
-## ⚙️ Compilation & Execution
+## Compilation & Execution
 
 gcc -o http_server http_server.c
 
